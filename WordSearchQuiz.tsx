@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import type { WordSearchQuizNode, Language } from './types';
 import { translations } from './translations';
@@ -15,59 +16,72 @@ type Coords = { row: number; col: number };
 
 // --- Utility Functions ---
 const generateGrid = (words: string[], size: number): { grid: Grid; placedWords: Map<string, Coords[]> } => {
-    let grid: (string | null)[][] = Array(size).fill(null).map(() => Array(size).fill(null));
-    const placedWords = new Map<string, Coords[]>();
+    // This outer loop will retry the entire generation if a word fails to place.
+    while (true) {
+        let grid: (string | null)[][] = Array(size).fill(null).map(() => Array(size).fill(null));
+        const placedWords = new Map<string, Coords[]>();
+        let allWordsPlaced = true;
 
-    const directions = [
-        { r: 0, c: 1 },  // Horizontal
-        { r: 1, c: 0 },  // Vertical
-        { r: 1, c: 1 },  // Diagonal down-right
-        { r: 0, c: -1 }, // Horizontal left
-        { r: -1, c: 0 }, // Vertical up
-        { r: -1, c: -1}, // Diagonal up-left
-        { r: 1, c: -1},  // Diagonal down-left
-        { r: -1, c: 1},  // Diagonal up-right
-    ];
+        const directions = [
+            { r: 0, c: 1 },  // Horizontal
+            { r: 1, c: 0 },  // Vertical
+            { r: 1, c: 1 },  // Diagonal down-right
+            { r: 0, c: -1 }, // Horizontal left
+            { r: -1, c: 0 }, // Vertical up
+            { r: -1, c: -1}, // Diagonal up-left
+            { r: 1, c: -1},  // Diagonal down-left
+            { r: -1, c: 1},  // Diagonal up-right
+        ];
 
-    words.forEach(word => {
-        let placed = false;
-        for (let attempts = 0; attempts < 100 && !placed; attempts++) {
-            const dir = directions[Math.floor(Math.random() * directions.length)];
-            const startRow = Math.floor(Math.random() * size);
-            const startCol = Math.floor(Math.random() * size);
+        for (const word of words) {
+            let placed = false;
+            // More attempts to be safe, but the outer while loop is the real guarantee.
+            for (let attempts = 0; attempts < 200 && !placed; attempts++) {
+                const dir = directions[Math.floor(Math.random() * directions.length)];
+                const startRow = Math.floor(Math.random() * size);
+                const startCol = Math.floor(Math.random() * size);
 
-            let canPlace = true;
-            const wordCoords: Coords[] = [];
-            
-            for (let i = 0; i < word.length; i++) {
-                const row = startRow + i * dir.r;
-                const col = startCol + i * dir.c;
+                let canPlace = true;
+                const wordCoords: Coords[] = [];
+                
+                for (let i = 0; i < word.length; i++) {
+                    const row = startRow + i * dir.r;
+                    const col = startCol + i * dir.c;
 
-                if (row < 0 || row >= size || col < 0 || col >= size || (grid[row][col] && grid[row][col] !== word[i])) {
-                    canPlace = false;
-                    break;
+                    if (row < 0 || row >= size || col < 0 || col >= size || (grid[row][col] && grid[row][col] !== word[i])) {
+                        canPlace = false;
+                        break;
+                    }
+                    wordCoords.push({ row, col });
                 }
-                wordCoords.push({ row, col });
-            }
 
-            if (canPlace) {
-                wordCoords.forEach((coord, i) => {
-                    grid[coord.row][coord.col] = word[i];
-                });
-                placedWords.set(word, wordCoords);
-                placed = true;
+                if (canPlace) {
+                    wordCoords.forEach((coord, i) => {
+                        grid[coord.row][coord.col] = word[i];
+                    });
+                    placedWords.set(word, wordCoords);
+                    placed = true;
+                }
+            }
+            if (!placed) {
+                allWordsPlaced = false;
+                break; // This word failed, break to retry the whole grid generation
             }
         }
-    });
-
-    const finalGrid = grid.map(row => row.map(cell => cell || 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'[Math.floor(Math.random() * 26)]));
-    return { grid: finalGrid, placedWords };
+        
+        if (allWordsPlaced) {
+            const finalGrid = grid.map(row => row.map(cell => cell || 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'[Math.floor(Math.random() * 26)]));
+            return { grid: finalGrid, placedWords };
+        }
+        // If not all words were placed, the `while(true)` loop continues, trying again.
+    }
 };
 
 // --- Component ---
 export const WordSearchQuiz: React.FC<WordSearchQuizProps> = ({ node, onComplete, onSkip, language }) => {
     const t = (key: string) => translations[language][key] || key;
-    const wordsToFind = useMemo(() => node.words.map(t).sort((a, b) => a.length - b.length), [node.words, language]);
+    // Sort by longest word first to make placement easier and more reliable
+    const wordsToFind = useMemo(() => node.words.map(t).sort((a, b) => b.length - a.length), [node.words, language]);
 
     const [gridData, setGridData] = useState<{ grid: Grid; placedWords: Map<string, Coords[]> } | null>(null);
     const [foundWords, setFoundWords] = useState<Set<string>>(new Set());

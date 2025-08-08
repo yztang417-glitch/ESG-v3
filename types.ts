@@ -1,3 +1,4 @@
+
 export type NodeId = string;
 export type Language = 'en' | 'ms';
 
@@ -19,6 +20,7 @@ interface BaseNode {
     isDynamic?: boolean;
     isCorrect?: boolean;
     achievementId?: string;
+    points?: number;
 }
 
 export interface QuestionNode extends BaseNode {
@@ -114,4 +116,6 @@ export interface GameState {
     lastQuestionId: string;
     visitedProgressNodes: Set<string>;
     quizCompleted: boolean;
+    q6Attempts: number;
+    q7Attempts: number;
 }

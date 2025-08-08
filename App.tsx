@@ -8,7 +8,7 @@ import { DragDropQuiz } from './DragDropQuiz';
 import { WordSearchQuiz } from './WordSearchQuiz';
 import { decisionTree, achievements, quizOrder, progressNodes, totalProgressSteps } from './constants';
 import { translations } from './translations';
-import type { Message, NodeId, DecisionTree, Node, Button, GameState, Achievement, LoopQuestionNode, Language, DragDropQuizNode, WordSearchQuizNode } from './types';
+import type { Message, NodeId, DecisionTree, Node, Button, GameState, Achievement, LoopQuestionNode, Language, DragDropQuizNode, WordSearchQuizNode, PromptNode } from './types';
 import { getDynamicResponse, translateToMalay } from './geminiService';
 import { Certificate } from './Certificate';
 import { Fireworks } from './Fireworks';
@@ -111,6 +111,8 @@ const App: React.FC = () => {
         lastQuestionId: '',
         visitedProgressNodes: new Set(),
         quizCompleted: false,
+        q6Attempts: 0,
+        q7Attempts: 0,
     };
 
     const [gameState, setGameState] = useState<GameState>(initialGameState);
@@ -172,7 +174,6 @@ const App: React.FC = () => {
 
     const updateScore = (points: number) => {
         setGameState(prev => {
-            if (prev.quizCompleted) return prev;
             return { ...prev, score: prev.score + points };
         });
     };
@@ -186,28 +187,59 @@ const App: React.FC = () => {
         setGameState(prev => {
             const newAchievements = new Set(prev.achievements);
             newAchievements.add(id);
-            const scoreToAdd = prev.quizCompleted ? 0 : achievement.points;
-            return { ...prev, achievements: newAchievements, score: prev.score + scoreToAdd };
+            // Achievement points are separate from the 1000-point system
+            // const scoreToAdd = achievement.points; 
+            return { ...prev, achievements: newAchievements };
         });
         
         setActiveAchievement(achievement);
         setTimeout(() => setActiveAchievement(null), 3500);
     };
     
-    const updateStreak = (isCorrect: boolean) => {
+    const handleCorrectAnswer = (node: Node, explicitQuestionId?: string) => {
         if (gameState.quizCompleted) return;
-        if (isCorrect) {
-            const newStreak = gameState.streak + 1;
-            // Re-balanced scoring: 90 base points, +20 for each consecutive correct answer.
-            const pointsToAdd = 90 + (newStreak > 1 ? 20 : 0);
-            updateScore(pointsToAdd);
-            setGameState(prev => ({ ...prev, streak: newStreak, quizCorrectAnswers: prev.quizCorrectAnswers + 1 }));
+    
+        const questionId = explicitQuestionId || gameState.lastQuestionId;
+        if (!questionId) return; // Should not happen in quiz flow
 
-            if (newStreak === 3) {
-                showAchievement('streak_3');
+        if (!('points' in node)) return;
+    
+        const basePoints = node.points || 0;
+        let pointsToAdd = 0;
+    
+        const getStreakAdjustedPoints = () => {
+            const streak = gameState.streak;
+            switch(questionId) {
+                case 'quiz_q2': return streak > 0 ? 50 : 40;
+                case 'quiz_q3': return streak > 1 ? 50 : 40;
+                case 'quiz_q4': return streak > 2 ? 50 : 40;
+                case 'quiz_q5': return streak > 3 ? 50 : 30;
+                case 'quiz_q6_prompt': {
+                    const q6Points = streak > 4 ? 150 : 130;
+                    return q6Points - (gameState.q6Attempts * 10);
+                }
+                case 'quiz_q7_prompt': {
+                    const q7Points = streak > 5 ? 150 : 130;
+                    return q7Points - (gameState.q7Attempts * 10);
+                }
+                case 'quiz_q8': return streak > 6 ? 200 : 180;
+                default: return basePoints; // For Q1 (quiz_q1) and any other case
             }
-        } else {
-            setGameState(prev => ({ ...prev, streak: 0 }));
+        };
+    
+        pointsToAdd = getStreakAdjustedPoints();
+    
+        updateScore(Math.max(0, pointsToAdd)); // Don't award negative points
+    
+        const newStreak = gameState.streak + 1;
+        setGameState(prev => ({
+            ...prev,
+            streak: newStreak,
+            quizCorrectAnswers: prev.quizCorrectAnswers + 1,
+        }));
+        
+        if (newStreak === 3) {
+            showAchievement('streak_3');
         }
     };
     
@@ -222,6 +254,8 @@ const App: React.FC = () => {
     };
 
     useEffect(() => {
+        const pointsPerProgressStep = 200 / totalProgressSteps;
+
         if (progressNodes.has(currentNodeId)) {
             setGameState(prev => {
                 if (prev.visitedProgressNodes.has(currentNodeId)) {
@@ -229,7 +263,15 @@ const App: React.FC = () => {
                 }
                 const newVisited = new Set(prev.visitedProgressNodes);
                 newVisited.add(currentNodeId);
-                return { ...prev, visitedProgressNodes: newVisited };
+                
+                // Award points for learning progress before the quiz starts.
+                const scoreToAdd = prev.quizCompleted ? 0 : pointsPerProgressStep;
+                
+                return { 
+                    ...prev, 
+                    visitedProgressNodes: newVisited,
+                    score: prev.score + scoreToAdd
+                };
             });
         }
     }, [currentNodeId]);
@@ -263,8 +305,12 @@ const App: React.FC = () => {
         const typingTimer = setTimeout(() => {
             setIsTyping(false);
 
-            if (node.isCorrect !== undefined) updateStreak(node.isCorrect);
-            if (node.achievementId) showAchievement(node.achievementId);
+            if ('isCorrect' in node && node.isCorrect) {
+                handleCorrectAnswer(node);
+            } else if ('isCorrect' in node && node.isCorrect === false) {
+                setGameState(prev => ({ ...prev, streak: 0 }));
+            }
+            if ('achievementId' in node && node.achievementId) showAchievement(node.achievementId);
             
             let messageText: string;
             const replacements: Record<string, string | number> = {
@@ -372,7 +418,7 @@ const App: React.FC = () => {
         }
 
         if (type === 'share_linkedin') {
-            const shareText = encodeURIComponent(`I just completed the ESG Student Guide by RHB, scoring ${gameState.score} out of 1000 points, and earned a certificate of completion! It's a fantastic interactive way to learn about Environmental, Social, and Governance principles. #ESG #Sustainability #RHBCares #RHBInsurance`);
+            const shareText = encodeURIComponent(`I just completed the ESG Student Guide by RHB, scoring ${gameState.score} out of 1000 points, and earned a certificate of completion! It's a fantastic interactive way to learn about Environmental, Social, and Governance principles. #ESG #Sustainability #Student #RHBCares #RHB #RHBI`);
             const url = `https://www.linkedin.com/feed/?shareActive=true&text=${shareText}`;
             window.open(url, '_blank');
             return;
@@ -394,18 +440,20 @@ const App: React.FC = () => {
         if (nextNodeId === 'restart_quiz') {
             setGameState(prev => ({
                 ...prev,
-                score: 280,
+                score: 200, // Reset to score after learning phase
                 streak: 0,
                 quizCorrectAnswers: 0,
                 lastQuestionId: '',
-                quizCompleted: false, // Allow earning points and achievements again
+                quizCompleted: false,
+                q6Attempts: 0,
+                q7Attempts: 0,
             }));
             setCurrentNodeId('quiz_q1');
             return;
         }
         
         if (nextNodeId === 'quiz_end' && !gameState.quizCompleted) {
-            if (gameState.quizCorrectAnswers >= 5) { // Updated for new number of questions
+            if (gameState.quizCorrectAnswers >= 5) { 
                 showAchievement('quiz_master');
             }
             setGameState(prev => ({...prev, quizCompleted: true}));
@@ -423,7 +471,6 @@ const App: React.FC = () => {
 
             if (isMainLoop) {
                 if (!visitedLoopBranches.has(topicKey)) {
-                    updateScore(50); // Award points for completing a main topic
                     const newVisited = new Set(visitedLoopBranches).add(topicKey);
                     setVisitedLoopBranches(newVisited);
                     if (newVisited.size === 1) showAchievement('branch_complete');
@@ -459,10 +506,8 @@ const App: React.FC = () => {
         const lastMessage = messages[messages.length - 1];
         addMessage({ sender: 'user', text: t('btn_finish_quiz') }, lastMessage.id);
         
-        setGameState(prev => ({ ...prev, lastQuestionId: 'quiz_q8' }));
-
         const node = decisionTree['quiz_q8'] as WordSearchQuizNode;
-        updateStreak(true); // Word search is always correct upon completion
+        handleCorrectAnswer(node, 'quiz_q8');
         setCurrentNodeId(node.nextNode);
     };
 
@@ -500,12 +545,10 @@ const App: React.FC = () => {
         if (!message) return;
 
         addMessage({ sender: 'user', text: message });
-        const lastNode = decisionTree[currentNodeId];
+        const lastNode = decisionTree[currentNodeId] as PromptNode;
         
         setInputValue('');
         setInputVisible(false);
-
-        if (lastNode.type !== 'PROMPT') return;
         
         if (currentNodeId === 'start') {
             setGameState(prev => ({...prev, userName: message}));
@@ -551,6 +594,11 @@ const App: React.FC = () => {
                     dynamicResponseTextRef.current = finalResponseText;
                     setCurrentNodeId(lastNode.nextNode);
                 } else {
+                    if (currentNodeId === 'quiz_q6_prompt') {
+                        setGameState(prev => ({ ...prev, q6Attempts: prev.q6Attempts + 1}));
+                    } else if (currentNodeId === 'quiz_q7_prompt') {
+                         setGameState(prev => ({ ...prev, q7Attempts: prev.q7Attempts + 1}));
+                    }
                     addMessage({sender: 'bot', text: finalResponseText});
                     setInputVisible(true);
                 }
